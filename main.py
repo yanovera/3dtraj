@@ -50,6 +50,16 @@ def generate_trajectory(sampling_rate=1000, v=100, w=3):
 
     return states
 
+def GPS_sensor(state, noise_std=10):
+    # Extract the x, y, z coordinates from the state
+    position = state[:3]
+    # Generate uncorrelated additive noise
+    noise = np.random.normal(0, noise_std, 3)
+    # Add the noise to the position
+    measurement = position + noise
+    return measurement
+
+
 def plot_trajectory(x, y, z):
     fig = plt.figure(figsize=(10, 10))
     ax = fig.add_subplot(111, projection='3d')
@@ -60,9 +70,139 @@ def plot_trajectory(x, y, z):
     plt.title('3D Trajectory of the Moving Target')
     plt.show()
 
+def kalman_filter(states, measurements, dt, process_noise_std, measurement_noise_std):
+    # State transition matrix
+    A = np.array([
+        [1, 0, 0, dt, 0, 0],
+        [0, 1, 0, 0, dt, 0],
+        [0, 0, 1, 0, 0, dt],
+        [0, 0, 0, 1, 0, 0],
+        [0, 0, 0, 0, 1, 0],
+        [0, 0, 0, 0, 0, 1]
+    ])
+
+    # Observation matrix
+    H = np.array([
+        [1, 0, 0, 0, 0, 0],
+        [0, 1, 0, 0, 0, 0],
+        [0, 0, 1, 0, 0, 0]
+    ])
+
+    # Process noise covariance
+    Q = np.array([
+        [dt**4/4, 0, 0, dt**3/2, 0, 0],
+        [0, dt**4/4, 0, 0, dt**3/2, 0],
+        [0, 0, dt**4/4, 0, 0, dt**3/2],
+        [dt**3/2, 0, 0, dt**2, 0, 0],
+        [0, dt**3/2, 0, 0, dt**2, 0],
+        [0, 0, dt**3/2, 0, 0, dt**2]
+    ]) * process_noise_std**2
+
+    # Measurement noise covariance
+    R = np.eye(3) * measurement_noise_std**2
+
+    # Initial state estimate and estimate error covariance
+    x = np.concatenate((measurements[0], [0, 0, 0]))  # First GPS measurement and zero initial velocities
+    P = np.eye(6) * 1000  # Large initial uncertainty
+
+    # Kalman filter
+    estimates = []
+    for z in measurements:
+        # Predict
+        x = A @ x
+        P = A @ P @ A.T + Q
+
+        # Update
+        K = P @ H.T @ np.linalg.inv(H @ P @ H.T + R)
+        x = x + K @ (z - H @ x)
+        P = (np.eye(6) - K @ H) @ P
+
+        estimates.append(x)
+
+    return np.array(estimates)
+
+def intermittent_kalman_filter(states, measurements, dt, downsample_rate, process_noise_std, measurement_noise_std):
+    # State transition matrix
+    A = np.array([
+        [1, 0, 0, dt, 0, 0],
+        [0, 1, 0, 0, dt, 0],
+        [0, 0, 1, 0, 0, dt],
+        [0, 0, 0, 1, 0, 0],
+        [0, 0, 0, 0, 1, 0],
+        [0, 0, 0, 0, 0, 1]
+    ])
+
+    # Observation matrix
+    H = np.array([
+        [1, 0, 0, 0, 0, 0],
+        [0, 1, 0, 0, 0, 0],
+        [0, 0, 1, 0, 0, 0]
+    ])
+
+    # Process noise covariance
+    Q = np.array([
+        [dt**4/4, 0, 0, dt**3/2, 0, 0],
+        [0, dt**4/4, 0, 0, dt**3/2, 0],
+        [0, 0, dt**4/4, 0, 0, dt**3/2],
+        [dt**3/2, 0, 0, dt**2, 0, 0],
+        [0, dt**3/2, 0, 0, dt**2, 0],
+        [0, 0, dt**3/2, 0, 0, dt**2]
+    ]) * process_noise_std**2
+
+    # Measurement noise covariance
+    R = np.eye(3) * measurement_noise_std**2
+
+    # Initial state estimate and estimate error covariance
+    x = np.concatenate((measurements[0], [0, 0, 0]))  # First GPS measurement and zero initial velocities
+    P = np.eye(6) * 1000  # Large initial uncertainty
+
+    # Kalman filter
+    estimates = []
+    for i, state in enumerate(states):
+        # Predict
+        x = A @ x
+        P = A @ P @ A.T + Q
+
+        # Update if a measurement is available
+        if i % downsample_rate == 0:
+            z = measurements[i // downsample_rate]
+            K = P @ H.T @ np.linalg.inv(H @ P @ H.T + R)
+            x = x + K @ (z - H @ x)
+            P = (np.eye(6) - K @ H) @ P
+
+        estimates.append(x)
+
+    return np.array(estimates)
+
+
+
 
 # Generate the trajectory states
 states = generate_trajectory()
 
-# Plot the trajectory
-plot_trajectory(states[:, 0], states[:, 1], states[:, 2])
+# Downsample the states to 10 Hz
+dt = 0.1  # s
+downsample_rate = int(1/dt)
+states_downsampled = states[::downsample_rate]
+
+# Generate the GPS measurements
+measurements = np.array([GPS_sensor(state) for state in states_downsampled])
+
+# Run the Kalman filter
+# estimates = kalman_filter(states_downsampled, measurements, dt, process_noise_std=1, measurement_noise_std=10)
+
+# Run the intermittent Kalman filter
+estimates = intermittent_kalman_filter(states, measurements, dt=0.001, downsample_rate=downsample_rate, process_noise_std=1, measurement_noise_std=10)
+
+
+# Plot the true and estimated trajectories
+fig = plt.figure(figsize=(10, 10))
+ax = fig.add_subplot(111, projection='3d')
+ax.plot(states_downsampled[:, 0], states_downsampled[:, 1], states_downsampled[:, 2], label='True')
+ax.plot(estimates[:, 0], estimates[:, 1], estimates[:, 2], label='Estimated')
+ax.set_xlabel('X')
+ax.set_ylabel('Y')
+ax.set_zlabel('Z')
+ax.legend()
+plt.title('True vs Estimated Trajectories')
+plt.show()
