@@ -12,6 +12,9 @@ def generate_trajectory(sampling_rate=1000, v=100, w=3):
     x_straight = 2000 + v*t_straight
     y_straight = np.full_like(t_straight, 2000)
     z_straight = 1000 + v*t_straight
+    vx_straight = v*np.ones_like(t_straight)
+    vy_straight = np.zeros_like(t_straight)
+    vz_straight = v*np.ones_like(t_straight)
 
     # Part 2: Circular motion
     w_rad = np.deg2rad(w)  # Convert angular velocity to rad/s
@@ -22,18 +25,30 @@ def generate_trajectory(sampling_rate=1000, v=100, w=3):
     x_circular = center_x + r*np.sin(angle)  # Sinusoidal component represents motion along X
     y_circular = center_y + r*np.cos(angle)  # Cosine component represents motion along Y
     z_circular = z_straight[-1] + v*t_circular
+    vx_circular = v*np.cos(angle)  # Velocity in x direction is v*cos(theta)
+    vy_circular = -v*np.sin(angle)  # Velocity in y direction is -v*sin(theta) (negative because the motion is counterclockwise)
+    vz_circular = v*np.ones_like(t_circular)
 
     # Part 3: Horizontal motion
     x_horizontal = np.full_like(t_horizontal, x_circular[-1])  # x-coordinate remains constant
     y_horizontal = y_circular[-1] + v*t_horizontal  # y-coordinate increases linearly with time
     z_horizontal = z_circular[-1] + v*t_horizontal
+    vx_horizontal = np.zeros_like(t_horizontal)
+    vy_horizontal = v*np.ones_like(t_horizontal)
+    vz_horizontal = v*np.ones_like(t_horizontal)
 
-    # Concatenate the positions
+    # Concatenate the positions and velocities
     x = np.concatenate((x_straight, x_circular, x_horizontal))
     y = np.concatenate((y_straight, y_circular, y_horizontal))
     z = np.concatenate((z_straight, z_circular, z_horizontal))
+    vx = np.concatenate((vx_straight, vx_circular, vx_horizontal))
+    vy = np.concatenate((vy_straight, vy_circular, vy_horizontal))
+    vz = np.concatenate((vz_straight, vz_circular, vz_horizontal))
 
-    return x, y, z
+    # Construct the state vectors
+    states = np.vstack((x, y, z, vx, vy, vz)).T
+
+    return states
 
 def plot_trajectory(x, y, z):
     fig = plt.figure(figsize=(10, 10))
@@ -46,6 +61,8 @@ def plot_trajectory(x, y, z):
     plt.show()
 
 
-# Generate and plot the trajectory
-x, y, z = generate_trajectory()
-plot_trajectory(x, y, z)
+# Generate the trajectory states
+states = generate_trajectory()
+
+# Plot the trajectory
+plot_trajectory(states[:, 0], states[:, 1], states[:, 2])
