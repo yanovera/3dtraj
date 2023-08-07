@@ -2,7 +2,6 @@ import numpy as np
 import matplotlib.pyplot as plt
 from scipy.linalg import block_diag
 
-
 def generate_trajectory(sampling_rate=1000, v=100, w=3):
     # Time intervals
     t_straight = np.linspace(0, 100, 100*sampling_rate)
@@ -51,9 +50,9 @@ def generate_trajectory(sampling_rate=1000, v=100, w=3):
 
     return states
 
-def radar_sensor(state, noise_std=np.array([0.01, 0.01, 10, 1])):
+def radar_sensor(state, radar_position, noise_std=np.array([0.01, 0.01, 10, 1])):
     # Extract the position and velocity from the state
-    position = state[:3]
+    position = state[:3] - radar_position
     velocity = state[3:]
 
     # Calculate the azimuth, elevation, range, and Doppler
@@ -87,15 +86,16 @@ def ekf_predict(x, P, F, Q):
     P = F @ P @ F.T + Q
     return x, P
 
-def ekf_update(x, P, z, h, H, R):
-    y = z - h(x)
+def ekf_update(x, P, z, h_func, H_func, R):
+    y = z - h_func(x)
+    H = H_func(x)
     S = H @ P @ H.T + R
     K = P @ H.T @ np.linalg.inv(S)
     x = x + K @ y
     P = (np.eye(len(x)) - K @ H) @ P
     return x, P
 
-def intermittent_extended_kalman_filter(states, measurements, dt, downsample_rate, process_noise_std, measurement_noise_std):
+def intermittent_extended_kalman_filter(states, measurements, dt, downsample_rate, process_noise_std, measurement_noise_std, radar_position):
     # State transition function and its Jacobian
     def f(x):
         F = np.array([
@@ -118,25 +118,32 @@ def intermittent_extended_kalman_filter(states, measurements, dt, downsample_rat
     ])
 
     # Observation function and its Jacobian
-    def h(x):
-        x, y, z, vx, vy, vz = x
-        R = np.sqrt(x**2 + y**2 + z**2)
-        theta = np.arctan2(y, x)
-        phi = np.arctan2(z, np.sqrt(x**2 + y**2))
-        D = (vx*x + vy*y + vz*z) / R
+    def h(x, radar_position):
+        px, py, pz, vx, vy, vz = x
+        px -= radar_position[0]
+        py -= radar_position[1]
+        pz -= radar_position[2]
+        R = np.sqrt(px ** 2 + py ** 2 + pz ** 2)
+        theta = np.arctan2(py, px)
+        phi = np.arctan2(pz, np.sqrt(px ** 2 + py ** 2))
+        D = (vx * px + vy * py + vz * pz) / R
         return np.array([theta, phi, R, D])
 
-    def H(x):
-        x, y, z, vx, vy, vz = x
-        R = np.sqrt(x**2 + y**2 + z**2)
-        R3 = R**3
-        H = np.zeros((4, 6))
-        H[0, :] = np.array([-y/R**2, x/R**2, 0, 0, 0, 0])
-        H[1, :] = np.array([-x*z/R3, -y*z/R3, np.sqrt(x**2 + y**2)/R3, 0, 0, 0])
-        H[2, :] = np.array([x/R, y/R, z/R, 0, 0, 0])
-        H[3, :] = np.array([-vx*x/R + x*(vx*x + vy*y + vz*z)/R3, -vy*x/R + y*(vx*x + vy*y + vz*z)/R3,
-                            -vz*x/R + z*(vx*x + vy*y + vz*z)/R3, x/R, y/R, z/R])
-        return H
+    def H(x, radar_position):
+        px, py, pz, vx, vy, vz = x
+        px -= radar_position[0]
+        py -= radar_position[1]
+        pz -= radar_position[2]
+        R = np.sqrt(px ** 2 + py ** 2 + pz ** 2)
+        R3 = R ** 3
+        H_matrix = np.zeros((4, 6))
+        H_matrix[0, :] = np.array([-py / R ** 2, px / R ** 2, 0, 0, 0, 0])
+        H_matrix[1, :] = np.array([-px * pz / R3, -py * pz / R3, np.sqrt(px ** 2 + py ** 2) / R3, 0, 0, 0])
+        H_matrix[2, :] = np.array([px / R, py / R, pz / R, 0, 0, 0])
+        H_matrix[3, :] = np.array([-vx * px / R + px * (vx * px + vy * py + vz * pz) / R3,
+                                   -vy * px / R + py * (vx * px + vy * py + vz * pz) / R3,
+                                   -vz * px / R + pz * (vx * px + vy * py + vz * pz) / R3, px / R, py / R, pz / R])
+        return H_matrix
 
     # Process noise covariance
     Q = block_diag(np.zeros((3, 3)), np.eye(3)*process_noise_std**2)
@@ -160,7 +167,7 @@ def intermittent_extended_kalman_filter(states, measurements, dt, downsample_rat
         # Update if a measurement is available
         if i % downsample_rate == 0:
             z = measurements[i // downsample_rate]
-            x, P = ekf_update(x, P, z, h, H(x), R)
+            x, P = ekf_update(x, P, z, lambda x: h(x, radar_position), lambda x: H(x, radar_position), R)
 
         estimates.append(x)
 
@@ -175,10 +182,11 @@ downsample_rate = int(1/dt)
 states_downsampled = states[::downsample_rate]
 
 # Generate the Radar measurements
-measurements = np.array([radar_sensor(state) for state in states_downsampled])
+radar_position = np.array([2500, 2500, 2000])
+measurements = np.array([radar_sensor(state, radar_position) for state in states_downsampled])
 
 # Run the intermittent extended Kalman filter
-estimates = intermittent_extended_kalman_filter(states, measurements, dt=0.001, downsample_rate=downsample_rate, process_noise_std=1, measurement_noise_std=np.array([0.01, 0.01, 10, 1]))
+estimates = intermittent_extended_kalman_filter(states, measurements, dt=0.001, downsample_rate=downsample_rate, process_noise_std=1, measurement_noise_std=np.array([0.01, 0.01, 10, 1]), radar_position=radar_position)
 
 # Plot the true and estimated trajectories
 fig = plt.figure(figsize=(10, 10))
